@@ -1,0 +1,59 @@
+# Auto-tag a release when package.json's "version" lands on main.
+#
+# This enforces the correct bump-then-tag order. v1.0.0 broke because a human
+# pushed the stable tag *before* the version bump: package.json still said
+# 1.1.0-alpha, so release.yml's version-match guard failed and the tag was
+# published with no dist/. Driving the tag from the merged version removes that
+# window entirely — the tag can only ever be created from a commit whose
+# package.json already declares that exact version, so the guard can't fail.
+#
+# How it chains to release.yml: this workflow creates `vX.Y.Z`; the push of that
+# tag triggers release.yml, which builds dist/, re-points the tag, and (for a
+# stable version) moves the floating major tag. A tag pushed with the built-in
+# GITHUB_TOKEN would NOT start release.yml (GITHUB_TOKEN pushes don't trigger
+# further workflow runs — the same property release.yml relies on to avoid an
+# infinite loop), so the push here uses a PAT.
+#
+# One-time setup: create a fine-grained PAT with `contents: write` on this repo
+# and store it as the RELEASE_PAT secret:
+#   gh secret set RELEASE_PAT
+# Without it, this job fails and no tag is created — a safe no-op, not a broken
+# release. Manual tagging (git tag vX.Y.Z && git push) still works as a fallback.
+name: Tag on version bump
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - package.json
+
+permissions:
+  contents: read # the tag push authenticates with RELEASE_PAT, not GITHUB_TOKEN
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.RELEASE_PAT }}
+
+      - name: Create matching tag when the version is new
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          TAG="v${VERSION}"
+
+          # Idempotent: package.json changes for other reasons too (deps, scripts).
+          # Only tag when vX.Y.Z does not already exist, so unrelated edits — and
+          # re-runs — are safe no-ops.
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists; nothing to do."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "${TAG}"
+          git push origin "refs/tags/${TAG}"
+          echo "Pushed ${TAG}; release.yml will build dist/ and (for stable) move the major tag."
