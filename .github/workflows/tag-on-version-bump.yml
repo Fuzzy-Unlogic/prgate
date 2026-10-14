@@ -17,8 +17,9 @@
 # One-time setup: create a fine-grained PAT with `contents: write` on this repo
 # and store it as the RELEASE_PAT secret:
 #   gh secret set RELEASE_PAT
-# Without it, this job fails and no tag is created — a safe no-op, not a broken
-# release. Manual tagging (git tag vX.Y.Z && git push) still works as a fallback.
+# Without it, this job skips with a warning and no tag is created — a safe
+# no-op, not a broken release. Manual tagging (git tag vX.Y.Z && git push)
+# still works as a fallback.
 name: Tag on version bump
 
 on:
@@ -34,11 +35,23 @@ jobs:
   tag:
     runs-on: ubuntu-latest
     steps:
+      - name: Require RELEASE_PAT
+        id: guard
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+        run: |
+          if [ -z "${RELEASE_PAT}" ]; then
+            echo "::warning::RELEASE_PAT not set; skipping auto-tag. Tag manually (git tag vX.Y.Z && git push) or set the secret."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@v7
+        if: steps.guard.outputs.skip != 'true'
         with:
           token: ${{ secrets.RELEASE_PAT }}
 
       - name: Create matching tag when the version is new
+        if: steps.guard.outputs.skip != 'true'
         run: |
           set -euo pipefail
           VERSION="$(node -p "require('./package.json').version")"
